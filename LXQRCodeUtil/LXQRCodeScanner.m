@@ -147,7 +147,7 @@ __LINE__, \
 
 #pragma mark - 启动 & 停止
 
-- (void)startRunningWithCallback:(void (^)())callback
+- (void)startRunningWithCallback:(void (^)(void))callback
 {
     if (self.session.isRunning) {
         return;
@@ -176,7 +176,7 @@ __LINE__, \
     }];
 }
 
-- (void)stopRunningWithCallback:(void (^)())callback
+- (void)stopRunningWithCallback:(void (^)(void))callback
 {
     if (!self.session.isRunning) {
         return;

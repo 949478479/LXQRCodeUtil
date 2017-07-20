@@ -28,8 +28,8 @@ NS_ASSUME_NONNULL_BEGIN
 @property (nullable, nonatomic) void (^failureBlock)(NSError *error);
 @property (nullable, nonatomic) void (^completionBlock)(LXQRCodeScanner *scanner, NSArray<NSString *> *messages);
 
-- (void)startRunningWithCallback:(void (^)())callback;
-- (void)stopRunningWithCallback:(void (^)())callback;
+- (void)startRunningWithCallback:(void (^)(void))callback;
+- (void)stopRunningWithCallback:(void (^)(void))callback;
 
 @end
 

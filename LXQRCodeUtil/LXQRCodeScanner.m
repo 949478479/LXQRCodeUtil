@@ -8,17 +8,6 @@
 
 #import "LXQRCodeScanner.h"
 
-#ifdef DEBUG
-#define LXLog(format, ...) \
-printf("%s at %s:%d %s\n", \
-__FUNCTION__, \
-(strrchr(__FILE__, '/') ?: __FILE__ - 1) + 1, \
-__LINE__, \
-[[NSString stringWithFormat:(format), ##__VA_ARGS__] UTF8String])
-#else
-#define LXLog(format, ...)
-#endif
-
 @interface LXCaptureVideoPreviewView ()
 @property (nonatomic) CGRect rectOfInterest;
 @property (nonatomic) CAShapeLayer *maskLayer;
@@ -50,7 +39,6 @@ __LINE__, \
     [super layoutSublayersOfLayer:layer];
     
     self.previewLayer.frame = self.bounds;
-    
     if (!CGRectEqualToRect(self.maskLayer.bounds, self.bounds)) {
         [self _adjustMaskLayer];
     }
@@ -115,16 +103,15 @@ __LINE__, \
 @property (nonatomic) AVCaptureMetadataOutput *output;
 @property (nonatomic) AVCaptureVideoPreviewLayer *previewLayer;
 
-@property (nonatomic) void (^didStartRunningCallback)(void);
-@property (nonatomic) void (^didStopRunningCallback)(void);
+@property (nonatomic) void (^startRunningCompletion)(BOOL, NSError *);
+@property (nonatomic) void (^stopRunningCompletion)(void);
 
 @end
 
 @implementation LXQRCodeScanner
 @synthesize previewView = _previewView;
 
-- (void)dealloc
-{
+- (void)dealloc {
     [[NSNotificationCenter defaultCenter] removeObserver:self];
 }
 
@@ -139,7 +126,7 @@ __LINE__, \
         _previewLayer = [AVCaptureVideoPreviewLayer layerWithSession:_session];
         _device = [AVCaptureDevice defaultDeviceWithMediaType:AVMediaTypeVideo];
         _serialQueue = dispatch_queue_create("com.hereafter.QRCodeSerialQueue", 0);
-        
+
         [self _registerSessionRunningNotification];
     }
     return self;
@@ -147,19 +134,21 @@ __LINE__, \
 
 #pragma mark - 启动 & 停止
 
-- (void)startRunningWithCallback:(void (^)(void))callback
+- (void)startRunningWithCompletion:(void (^)(BOOL, NSError * _Nullable))completion
 {
     if (self.session.isRunning) {
         return;
     }
     
-    _didStartRunningCallback = callback;
-    
+    self.startRunningCompletion = completion;
     [AVCaptureDevice requestAccessForMediaType:AVMediaTypeVideo completionHandler:^(BOOL granted) {
         dispatch_async(dispatch_get_main_queue(), ^{
             if (granted) {
                 dispatch_async(self.serialQueue, ^{
-                    if (!self.session.isRunning && [self _addDeviceInput]) {
+					if (self.session.isRunning) {
+						return;
+					}
+                    if ([self _addDeviceInput]) {
                         [self _addMetadataOutput];
                         [self _configureDevice];
                         [self.session startRunning];
@@ -170,21 +159,35 @@ __LINE__, \
                 NSError *error = [NSError errorWithDomain:AVFoundationErrorDomain
                                                      code:AVErrorApplicationIsNotAuthorizedToUseDevice
                                                  userInfo:userInfo];
-                !self.failureBlock ?: self.failureBlock(error);
+				!self.startRunningCompletion ?: self.startRunningCompletion(NO, error);
             }
         });
     }];
 }
 
-- (void)stopRunningWithCallback:(void (^)(void))callback
+- (void)stopRunningWithCompletion:(void (^)(void))completion
 {
-    if (!self.session.isRunning) {
-        return;
+    if (self.session.isRunning) {
+		_stopRunningCompletion = completion;
+		dispatch_async(self.serialQueue, ^{
+			[self.session stopRunning];
+		});
     }
-    _didStopRunningCallback = callback;
-    dispatch_async(self.serialQueue, ^{
-        [self.session stopRunning];
-    });
+}
+
+#pragma mark - 手电筒
+
+- (void)setTorchActive:(BOOL)torchActive
+{
+	_torchActive = torchActive;
+
+	NSError *error = nil;
+	if ([self.device lockForConfiguration:&error]) {
+		self.device.torchMode = torchActive ? AVCaptureTorchModeOn : AVCaptureTorchModeOff;
+		[self.device unlockForConfiguration];
+	} else {
+		!self.failureBlock ?: self.failureBlock(error);
+	}
 }
 
 #pragma mark - 配置
@@ -230,32 +233,32 @@ __LINE__, \
         [self.session addInput:self.input];
         return YES;
     }
-    
-    !self.failureBlock ?: self.failureBlock(error);
-    
+
+	!self.startRunningCompletion ?: self.startRunningCompletion(NO, error);
+
     return NO;
 }
 
 - (void)_addMetadataOutput
 {
-    if (self.output) {
-        return;
+    if (!self.output) {
+		self.output = [AVCaptureMetadataOutput new];
+		[self.session addOutput:self.output];
+		self.output.metadataObjectTypes = @[AVMetadataObjectTypeQRCode];
+		[self.output setMetadataObjectsDelegate:self queue:self.serialQueue];
     }
-    self.output = [AVCaptureMetadataOutput new];
-    [self.session addOutput:self.output];
-    self.output.metadataObjectTypes = @[AVMetadataObjectTypeQRCode];
-    [self.output setMetadataObjectsDelegate:self queue:self.serialQueue];
 }
 
 - (void)_configureDevice
 {
     NSError *error = nil;
     if ([self.device lockForConfiguration:&error]) {
-        [self.device setAutoFocusRangeRestriction:AVCaptureAutoFocusRangeRestrictionNear];
-        [self.device setSmoothAutoFocusEnabled:NO];
+		self.device.smoothAutoFocusEnabled = NO;
+		self.device.focusMode = AVCaptureFocusModeContinuousAutoFocus;
+		self.device.autoFocusRangeRestriction = AVCaptureAutoFocusRangeRestrictionNear;
         [self.device unlockForConfiguration];
     } else {
-        LXLog(@"%@", error);
+		!self.startRunningCompletion ?: self.startRunningCompletion(NO, error);
     }
 }
 
@@ -263,32 +266,34 @@ __LINE__, \
 
 - (void)_registerSessionRunningNotification
 {
-    [[NSNotificationCenter defaultCenter] addObserver:self
-                                             selector:@selector(_handleCaptureSessionNotification:)
-                                                 name:AVCaptureSessionRuntimeErrorNotification
-                                               object:self.session];
+	NSNotificationCenter *center = [NSNotificationCenter defaultCenter];
+
+	[center addObserver:self
+			   selector:@selector(_handleCaptureSessionNotification:)
+				   name:AVCaptureSessionDidStartRunningNotification
+				 object:self.session];
     
-    [[NSNotificationCenter defaultCenter] addObserver:self
-                                             selector:@selector(_handleCaptureSessionNotification:)
-                                                 name:AVCaptureSessionDidStartRunningNotification
-                                               object:self.session];
-    
-    [[NSNotificationCenter defaultCenter] addObserver:self
-                                             selector:@selector(_handleCaptureSessionNotification:)
-                                                 name:AVCaptureSessionDidStopRunningNotification
-                                               object:self.session];
+	[center addObserver:self
+			   selector:@selector(_handleCaptureSessionNotification:)
+				   name:AVCaptureSessionDidStopRunningNotification
+				 object:self.session];
+
+	[center addObserver:self
+			   selector:@selector(_handleCaptureSessionNotification:)
+				   name:AVCaptureSessionRuntimeErrorNotification
+				 object:self.session];
 }
 
 - (void)_handleCaptureSessionNotification:(NSNotification *)notification
 {
     dispatch_async(dispatch_get_main_queue(), ^{
         if ([notification.name isEqualToString:AVCaptureSessionDidStartRunningNotification]) {
-            !self.didStartRunningCallback ?: self.didStartRunningCallback();
-            self.didStartRunningCallback = nil;
+            !self.startRunningCompletion ?: self.startRunningCompletion(YES, nil);
+            self.startRunningCompletion = nil;
         }
         else if ([notification.name isEqualToString:AVCaptureSessionDidStopRunningNotification]) {
-            !self.didStopRunningCallback ?: self.didStopRunningCallback();
-            self.didStopRunningCallback = nil;
+            !self.stopRunningCompletion ?: self.stopRunningCompletion();
+            self.stopRunningCompletion = nil;
         }
         else if ([notification.name isEqualToString:AVCaptureSessionRuntimeErrorNotification]) {
             !self.failureBlock ?: self.failureBlock(notification.userInfo[AVCaptureSessionErrorKey]);
@@ -296,7 +301,7 @@ __LINE__, \
     });
 }
 
-#pragma mark - <AVCaptureMetadataOutputObjectsDelegate>
+#pragma mark - AVCaptureMetadataOutputObjectsDelegate
 
 - (void)captureOutput:(AVCaptureOutput *)captureOutput didOutputMetadataObjects:(NSArray *)metadataObjects fromConnection:(AVCaptureConnection *)connection
 {

@@ -43,11 +43,11 @@
 - (IBAction)switchAction:(UISwitch *)sender
 {
     if (sender.isOn) {
-        [self.scanner startRunningWithCallback:^{
+        [self.scanner startRunningWithCompletion:^(BOOL success, NSError *error){
             self.scanner.previewView.hidden = NO;
         }];
     } else {
-        [self.scanner stopRunningWithCallback:^{
+        [self.scanner stopRunningWithCompletion:^{
             self.scanner.previewView.hidden = YES;
             self.messageLabel.text = nil;
         }];

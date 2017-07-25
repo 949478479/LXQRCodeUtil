@@ -114,6 +114,10 @@
                                             <constraint firstItem="3cp-Fk-y4M" firstAttribute="top" secondItem="fiZ-7f-rlB" secondAttribute="top" id="zgt-Wt-QKr"/>
                                         </constraints>
                                     </view>
+                                    <switch opaque="NO" contentMode="scaleToFill" horizontalHuggingPriority="750" verticalHuggingPriority="750" fixedFrame="YES" contentHorizontalAlignment="center" contentVerticalAlignment="center" on="YES" translatesAutoresizingMaskIntoConstraints="NO" id="5Uf-zi-ULM">
+                                        <rect key="frame" x="102" y="464" width="51" height="31"/>
+                                        <autoresizingMask key="autoresizingMask" flexibleMaxX="YES" flexibleMaxY="YES"/>
+                                    </switch>
                                 </subviews>
                                 <color key="backgroundColor" white="1" alpha="1" colorSpace="calibratedWhite"/>
                                 <constraints>

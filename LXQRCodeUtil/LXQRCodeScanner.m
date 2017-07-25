@@ -20,7 +20,7 @@
 {
     self = [super initWithFrame:frame];
     if (self) {
-        _maskAlpha = 0.25;
+        [self _commonInit];
     }
     return self;
 }
@@ -29,51 +29,58 @@
 {
     self = [super initWithCoder:coder];
     if (self) {
-        _maskAlpha = 0.25;
+		[self _commonInit];
     }
     return self;
+}
+
+- (void)_commonInit
+{
+	[self setMaskAlpha:0.75];
+	[self _addMaskLayer];
 }
 
 - (void)layoutSublayersOfLayer:(CALayer *)layer
 {
     [super layoutSublayersOfLayer:layer];
-    
-    self.previewLayer.frame = self.bounds;
-    if (!CGRectEqualToRect(self.maskLayer.bounds, self.bounds)) {
+
+	if (!CGRectEqualToRect(self.previewLayer.frame, self.bounds)) {
+		self.previewLayer.frame = self.bounds;
+	}
+    if (!CGRectEqualToRect(self.maskLayer.frame, self.bounds)) {
         [self _adjustMaskLayer];
     }
 }
 
+- (void)_addMaskLayer
+{
+	CAShapeLayer *maskLayer = [CAShapeLayer layer];
+	maskLayer.opacity = self.maskAlpha;
+	maskLayer.fillRule = kCAFillRuleEvenOdd;
+	maskLayer.fillColor = [UIColor blackColor].CGColor;
+
+	[self setMaskLayer:maskLayer];
+	[self.layer insertSublayer:maskLayer atIndex:0];
+}
+
 - (void)_adjustMaskLayer
 {
-    [CATransaction begin];
-    [CATransaction setDisableActions:YES];
-    
-    [self.maskLayer removeFromSuperlayer];
-    
-    CGFloat width = self.bounds.size.width;
-    CGFloat height = self.bounds.size.height;
-    CGRect rect = {
-        self.rectOfInterest.origin.x * width,
-        self.rectOfInterest.origin.y * height,
-        self.rectOfInterest.size.width * width,
-        self.rectOfInterest.size.height * height,
-    };
-    
-    CGMutablePathRef path = CGPathCreateMutable();
-    CGPathAddRect(path, NULL, self.bounds);
-    CGPathAddRect(path, NULL, rect);
-    
-    CAShapeLayer *maskLayer = [CAShapeLayer layer];
-    maskLayer.frame = self.bounds;
-    maskLayer.opacity = self.maskAlpha;
-    maskLayer.path = CFAutorelease(path);
-    maskLayer.fillRule = kCAFillRuleEvenOdd;
-    maskLayer.fillColor = [UIColor blackColor].CGColor;
-    
-    [self.layer addSublayer:maskLayer];
-    
-    [CATransaction commit];
+	self.maskLayer.frame = self.bounds;
+
+	CGFloat width = self.bounds.size.width;
+	CGFloat height = self.bounds.size.height;
+	CGRect rect = {
+		self.rectOfInterest.origin.x * width,
+		self.rectOfInterest.origin.y * height,
+		self.rectOfInterest.size.width * width,
+		self.rectOfInterest.size.height * height,
+	};
+
+	CGMutablePathRef path = CGPathCreateMutable();
+	CGPathAddRect(path, NULL, self.bounds);
+	CGPathAddRect(path, NULL, rect);
+	self.maskLayer.path = path;
+	CGPathRelease(path);
 }
 
 - (void)setPreviewLayer:(AVCaptureVideoPreviewLayer *)previewLayer
@@ -85,9 +92,17 @@
     }
 }
 
+- (void)setRectOfInterest:(CGRect)rectOfInterest
+{
+	_rectOfInterest = rectOfInterest;
+
+	[self _adjustMaskLayer];
+}
+
 - (void)setMaskAlpha:(CGFloat)maskAlpha
 {
     _maskAlpha = maskAlpha;
+
     self.maskLayer.opacity = maskAlpha;
 }
 
@@ -148,8 +163,8 @@
 					if (self.session.isRunning) {
 						return;
 					}
-                    if ([self _addDeviceInput]) {
-                        [self _addMetadataOutput];
+                    if ([self _addDeviceInputIfNeeded]) {
+                        [self _addMetadataOutputIfNeeded];
                         [self _configureDevice];
                         [self.session startRunning];
                     }
@@ -160,6 +175,7 @@
                                                      code:AVErrorApplicationIsNotAuthorizedToUseDevice
                                                  userInfo:userInfo];
 				!self.startRunningCompletion ?: self.startRunningCompletion(NO, error);
+				self.startRunningCompletion = nil;
             }
         });
     }];
@@ -168,7 +184,7 @@
 - (void)stopRunningWithCompletion:(void (^)(void))completion
 {
     if (self.session.isRunning) {
-		_stopRunningCompletion = completion;
+		self.stopRunningCompletion = completion;
 		dispatch_async(self.serialQueue, ^{
 			[self.session stopRunning];
 		});
@@ -197,6 +213,7 @@
     if (_previewView != previewView) {
         _previewView = previewView;
         _previewView.previewLayer = self.previewLayer;
+		_previewView.rectOfInterest = self.rectOfInterest;
     }
 }
 
@@ -210,18 +227,19 @@
 
 - (void)setRectOfInterest:(CGRect)rectOfInterest
 {
-    _rectOfInterest = rectOfInterest;
+	_rectOfInterest = rectOfInterest;
 
-    self.previewView.rectOfInterest = rectOfInterest;
-    self.output.rectOfInterest = (CGRect){
-        rectOfInterest.origin.y,
-        rectOfInterest.origin.x,
-        rectOfInterest.size.height,
-        rectOfInterest.size.width,
-    };
+	[_previewView setRectOfInterest:rectOfInterest];
+
+	[self.output setRectOfInterest:(CGRect){
+		rectOfInterest.origin.y,
+		rectOfInterest.origin.x,
+		rectOfInterest.size.height,
+		rectOfInterest.size.width,
+	}];
 }
 
-- (BOOL)_addDeviceInput
+- (BOOL)_addDeviceInputIfNeeded
 {
     if (self.input) {
         return YES;
@@ -235,18 +253,27 @@
     }
 
 	!self.startRunningCompletion ?: self.startRunningCompletion(NO, error);
+	self.startRunningCompletion = nil;
 
     return NO;
 }
 
-- (void)_addMetadataOutput
+- (void)_addMetadataOutputIfNeeded
 {
-    if (!self.output) {
-		self.output = [AVCaptureMetadataOutput new];
-		[self.session addOutput:self.output];
-		self.output.metadataObjectTypes = @[AVMetadataObjectTypeQRCode];
-		[self.output setMetadataObjectsDelegate:self queue:self.serialQueue];
+    if (self.output) {
+		return;
     }
+
+	[self.session addOutput:self.output = [AVCaptureMetadataOutput new]];
+
+	[self.output setRectOfInterest:(CGRect){
+		self.rectOfInterest.origin.y,
+		self.rectOfInterest.origin.x,
+		self.rectOfInterest.size.height,
+		self.rectOfInterest.size.width,
+	}];
+	[self.output setMetadataObjectTypes:@[AVMetadataObjectTypeQRCode]];
+	[self.output setMetadataObjectsDelegate:self queue:self.serialQueue];
 }
 
 - (void)_configureDevice
@@ -259,6 +286,7 @@
         [self.device unlockForConfiguration];
     } else {
 		!self.startRunningCompletion ?: self.startRunningCompletion(NO, error);
+		self.startRunningCompletion = nil;
     }
 }
 
